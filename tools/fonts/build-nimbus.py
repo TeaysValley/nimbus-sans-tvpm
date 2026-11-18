@@ -12,7 +12,8 @@ What it does, per docs/export-fonts-brief.md section A:
      stems match NHG Display 75 Bold (178 vs 177 per 1,000) and the horizontals do too (128 vs 131);
      cap height is held; the Regular's weight already matches and is not touched
   3. both weights: side bearings pulled in to NHG Display's fit (39 and 20 units per side, half on
-     digits), word space set to NHG's, URW's GSUB and GPOS copied in from the .otf (liga, frac,
+     digits), word space set to NHG's and the no-break space with it (one width: the PDF engine ties
+     figures and dates with no-break spaces), URW's GSUB and GPOS copied in from the .otf (liga, frac,
      numr, dnom, sups, ordn, kern) and scaled, the Bold's kerning scaled by 1.15, a legacy kern
      table written for PowerPoint, plus three features URW does not ship: pnum (proportional
      figures), tnum (the default, named so a stylesheet can ask for it) and case (dashes, bullets
@@ -48,6 +49,11 @@ BUILD = ROOT / "tools" / "fonts" / "build"
 BOLD = dict(dx=29, dy=12, letters=39, digits=20, space=328, kern_scale=1.15, weight_class=700)
 REGULAR = dict(letters=20, digits=10, space=338, kern_scale=1.0, weight_class=400)
 FLOOR = 5          # a side bearing is never pulled under this, and one already under it is left alone
+# The word space and the no-break space share one width. URW draws both at 569; the fit sets the word space, and a
+# no-break space left at 569 would set every tied space (tie() and typeset() in shared/print/_page.js: dates, figures
+# and their units, meta values, "Page X of Y") 0.11 em wider than the word space beside it. U+2002 en space keeps its
+# half em; the font has no U+2007 figure space and no U+2009 / U+202F thin spaces (check() says so if that changes).
+WORD_SPACES = (0x0020, 0x00A0)
 CASE_GLYPHS = ["hyphen", "endash", "emdash", "bullet", "periodcentered", "guillemotleft", "guillemotright",
                "guilsinglleft", "guilsinglright"]
 DIGITS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
@@ -143,7 +149,7 @@ def refit(font, letters, digits, space):
     glyph_set = font.getGlyphSet()
     cmap = font.getBestCmap()
     digit_names = {cmap[c] for c in range(ord("0"), ord("9") + 1) if c in cmap}
-    space_name = cmap.get(32)
+    space_names = {cmap[c] for c in WORD_SPACES if c in cmap}
 
     def pull(sb, amount):
         if sb < FLOOR:
@@ -154,7 +160,7 @@ def refit(font, letters, digits, space):
     for name in font.getGlyphOrder():
         g = glyf[name]
         adv, lsb = hmtx[name]
-        if name == space_name:
+        if name in space_names:
             hmtx[name] = (space, 0)
             continue
         if g.numberOfContours == 0 or adv == 0:
@@ -342,6 +348,7 @@ def emit(built: dict, src_dir: Path):
 # ---------- check ----------
 def check(paths: dict):
     heading = "Owner Report · Riverside Flats"
+    failed = []
     for style, path in paths.items():
         t = TTFont(path)
         gs, cmap, k = t.getGlyphSet(), t.getBestCmap(), 1000 / t["head"].unitsPerEm
@@ -363,7 +370,15 @@ def check(paths: dict):
         print(f"  stem of I {box('I')[0]:.0f} · hyphen thickness {(bp.bounds[3]-bp.bounds[1])*k:.0f} · cap height {box('H')[1]:.0f} · x-height {box('x')[1]:.0f}  (per 1,000 em)")
         print(f"  mean side bearing a–z {sum(sbs)/len(sbs):.1f} · word space {hm[cmap[32]][0]*k:.0f} · heading set width {w:.2f} em")
         print(f"  glyphs {len(t.getGlyphOrder())} · kern table pairs {kern_pairs} · GPOS {gpos} · GSUB {gsub}")
-        print(f"  expect: Bold stem 178±2, hyphen 128±3, sb ≈21, space 160, heading ≈13.9; Regular stem 94, sb ≈31, space 165, heading ≈12.7")
+        spaces = {c: hm[cmap[c]][0] for c in (0x0020, 0x00A0, 0x2002, 0x2007, 0x2009, 0x202F) if c in cmap}
+        tied = spaces.get(0x00A0) == spaces.get(0x0020)
+        print("  spaces " + " · ".join(f"U+{c:04X} {v*k:.0f}" for c, v in spaces.items())
+              + f"  (per 1,000 em) · no-break space = word space: {'yes' if tied else 'NO'}")
+        print(f"  expect: Bold stem 178±2, hyphen 128±3, sb ≈21, space 160, heading ≈13.9; Regular stem 94, sb ≈31, space 165, heading ≈12.7; no-break space = word space")
+        if not tied:
+            failed.append(style)
+    if failed:
+        sys.exit(f"the no-break space is not the word space's width in: {', '.join(failed)}")
 
 
 def main():
